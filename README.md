@@ -80,7 +80,7 @@ python swmap.py --help
 
 ```bash
 python scripts/update_patterns.py --update
-
+#validate
 python scripts/update_patterns.py --validate
 ```
 
@@ -99,8 +99,8 @@ $ swmap --help
                                                    █████    
                                                   ░░░░░     
 
-SWMap — Service Worker Security Mapper
-Advanced reconnaissance tool for Service Worker security assessment
+        SWMap — Service Worker Security Mapper
+Advanced recon tool for Service Worker security assessment
 
 Usage:
   swmap [OPTIONS] [target]
