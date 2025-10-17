@@ -20,7 +20,7 @@ Most PWA/SW security reviews stop at “is there a service worker?”. Real apps
 ## Features at a Glance
 
 * **Scope Calculator**: Computes effective scope, validates `Service-Worker-Allowed`, rates scope breadth.
-* **Security Flags & Levels**: Standardized flags (e.g., `WIDENED_SCOPE`, `SENSITIVE_CACHING`, `EVAL_USAGE`) + `CRITICAL/HIGH/MEDIUM/LOW/INFO`.
+* **Security Flags & Levels**: Standardized flags (ex, `WIDENED_SCOPE`, `SENSITIVE_CACHING`, `EVAL_USAGE`) + `CRITICAL/HIGH/MEDIUM/LOW/INFO`.
 * **Workbox Detection**: Finds Workbox usage and modules (`precaching`, `routing`, `strategies`).
 * **Route Discovery**: Extracts candidate routes; optional **route coverage** (seeded routes and same-origin crawl).
 * **Pattern Engine**: Extensible matcher with context capture; transparent outputs for triage.
