@@ -2,9 +2,9 @@
 
 ![swmap-logo](logo.png)
 
-**SWMap** is an advanced **Service Worker security Analyzer**. It discovers, fetches, and analyzes Service Workers (SW) to surface **scope risks, caching issues, route exposure, Workbox usage, and code-risk patterns**—then summarizes findings with **standardized risk levels** and operator-ready output.
+**SWMap** is an advanced **Service Worker security analyzer** for modern web apps. It discovers, fetches, and analyzes Service Workers to surface scope risks, caching issues, route exposure, Workbox/Flutter usage, and dangerous code patterns and can prove behavior with a headless browser. Results are summarized with standardized risk levels and operator-ready output.
 
-Built for **product security teams, red teams, and bug-bounty hunters** that demand rigor, speed, and explainability.
+Built for bug bounty hunters, red teams, and product security engineers who demand rigor, speed, and explainability.
 
 ## Why SWMap?
 
@@ -30,7 +30,7 @@ Most PWA/SW security reviews stop at “is there a service worker?”. Real apps
 * **Performance Utilities**: Benchmarks, concurrency tests, memory profiling (optional).
 
 ---
-**Flow:** Targets → Fetch/Probe → Analyze (scope, routes, caching, Workbox, patterns) → *(optional)* AST → *(optional)* Headless validate → Score & flag → Filter/Serialize → Summarize.
+**Flow:** Targets → Fetch/Probe → Static(scope, routes, patterns) → *(optional)* AST → *(optional)* Headless validate → Score & flag → Filter/Serialize → Summarize.
 
 ---
 
@@ -87,7 +87,6 @@ python scripts/update_patterns.py --validate
 ## 🧰 CLI --help Output Command
 ```bash
 $ swmap --help
-
                                                             
   █████  █████ ███ █████ █████████████    ██████   ████████ 
  ███░░  ░░███ ░███░░███ ░░███░░███░░███  ░░░░░███ ░░███░░███
@@ -99,69 +98,73 @@ $ swmap --help
                                                    █████    
                                                   ░░░░░     
 
-        SWMap — Service Worker Security Mapper
-Advanced recon tool for Service Worker security assessment
-
-Usage:
-  swmap [OPTIONS] [target]
-  swmap -i targets.txt [OPTIONS]
-
-Positional:
-  target                        Single URL to scan (e.g., https://target.com)
+Service Worker Security Mapper - Advanced SW reconn tool
 
 Information Options:
-  -h, --help                    Show this help message and exit
-  -v, --version                 Show version information and exit
+  -h, --help            Show this help message and exit
+  -V, --version         Show version information and exit
 
 Input Options:
-  -i, --input FILE              Read targets from file (one URL per line)
-      --no-probe                Skip common SW filename probing if no registration found
+  target                Single URL to scan (e.g: https://target.com)
+  -i INPUT_FILE, --input INPUT_FILE
+                        Read targets from file (one URL per line)
+  --no-probe            Skip common SW filename probing
 
 Scan Options:
-  -P, --parallel INT            Concurrent scans (default: 6)
-  -t, --timeout INT             Request timeout in seconds (default: 15)
-      --max-sw-bytes INT        Maximum SW script size in KB (default: 512)
-      --max-routes INT          Maximum routes to extract per SW (default: 50)
-      --deep                    Recursively analyze importScripts() (depth: 2)
+  -P PARALLEL, --parallel PARALLEL
+                        Concurrent scans (default: 6, max: 20)
+  -t TIMEOUT, --timeout TIMEOUT
+                        Request timeout in seconds (default: 15)
+  --max-sw-bytes MAX_SW_BYTES
+                        Maximum SW script size in bytes (default: 524288)
+  --max-routes MAX_ROUTES
+                        Maximum routes to extract per SW (default: 50)
+  --deep                Legacy deep static parse hint (will set --ast-depth=2 if not provided)
+
+Enhanced Analysis (optional):
+  --ast                 Enable AST analysis (default)
+  --no-ast              Disable AST analysis
+  --ast-depth AST_DEPTH
+                        Recurse importScripts/ESM to this depth (default: 0; or 2 if --deep)
+  --headless            Enable Playwright headless validation
+  --headless-timeout HEADLESS_TIMEOUT
+                        Headless timeout (ms)
+  --headless-max-routes HEADLESS_MAX_ROUTES
+                        Max routes to probe dynamically
+  --headless-crawl      Crawl same-origin links (default)
+  --no-headless-crawl   Disable headless crawl
+  --route-seed ROUTE    Seed route (repeatable)
+  --login-script PATH   Path to a JS file to run before crawl (auto-login etc.)
+  --login-wait SELECTOR
+                        CSS selector to wait for after login
+  --prove-interception  Prove response interception via SW
+  --no-prove-interception
+                        Disable interception proof
+  --prove-precache      Prove precache via cache audit
+  --no-prove-precache  Disable precache proof
+  --prove-swr           Try to detect stale-while-revalidate
+  --no-prove-swr       Disable SWR proof
 
 Security Analysis Options:
-      --risk-threshold INT      Only output findings with risk score >= N (0–100)
-      --no-risk-assessment      Skip risk scoring and security analysis
-      --include-patterns        Include detected security patterns in JSON output
-      --sensitive-only          Only output workers with sensitive route patterns
+  --risk-threshold RISK_THRESHOLD
+                        Only output findings with risk score >= N (0-100)
+  --no-risk-assessment  Skip risk scoring and security analysis
+  --include-patterns    Output detected security patterns in detail
+  --sensitive-only      Only output workers with sensitive route patterns
 
 Output Options:
-      --json                    Emit JSONL (one JSON record per line)
-  -o, --output FILE             Write results to file (stdout if omitted)
-      --quiet                   Suppress banners/progress; warnings+errors only
-      --verbose                 Detailed logs and summary
+  --json                JSONL output with full security analysis
+  --quiet               Suppress comments and progress messages
+  --verbose             Detailed security analysis output
+  -o OUTPUT, --output OUTPUT
+                        Write results to file
 
 Network Options:
-      --ua, --user-agent STR    Custom User-Agent string
-      --header "K: V"           Extra HTTP header (repeatable)
-      --cookie STR              Cookie header value
-      --proxy URL               HTTP proxy URL
-
-Enhanced Analysis (optional extras):
-      --ast                     Enable AST-based analysis (Node.js required)
-      --no-ast                  Disable AST analysis
-      --ast-depth INT           Max import recursion depth (default: 2)
-      --ast-timeout SEC         AST worker timeout (default: 30)
-      --node-path PATH          Path to Node.js executable (default: node)
-      --headless                Enable headless browser validation (Playwright)
-      --headless-timeout MS     Headless timeout in milliseconds (default: 30000)
-      --browser NAME            Browser engine: chromium|firefox|webkit (default: chromium)
-
-Route Coverage (when headless enabled):
-      --route-seed PATH         Route to probe (repeatable), e.g., /api/me
-      --crawl                   Crawl same-origin links to expand routes under test
-      --crawl-max INT           Max pages to crawl (default: 30)
-      --crawl-scope PATH        Limit crawl under path prefix (e.g., /app)
-
-Notes:
-  • Headless mode requires: pip install "playwright" and a one-time `python -m playwright install`.
-  • AST mode requires Node.js in PATH (or set --node-path) and will analyze importScripts/module imports.
-  • Use --json for machine-readable records suitable for pipelines/CI.
+  --ua USER_AGENT, --user-agent USER_AGENT
+                        Custom User-Agent string
+  --header HEADERS      Extra HTTP header (repeatable)
+  --cookie COOKIE       Cookie header value
+  --proxy PROXY         HTTP proxy URL (currently unused)
 
 For more information: https://github.com/bl4ck0w1/swmap
 ```
@@ -240,7 +243,7 @@ This project is licensed under the APACHE 2.O License - see the [LICENSE](LICENS
 
 ## Compliance & Ethics
 
-⚠️ **Authorized Use Only** - DeepFuzz is designed for:
+⚠️ **Authorized Use Only** - Swmap is designed for:
 - Penetration testing with explicit written permission
 - Bug bounty programs within platform guidelines  
 - Government cybersecurity operations
