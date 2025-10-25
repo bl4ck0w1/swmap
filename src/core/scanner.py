@@ -1,20 +1,21 @@
+# src/core/scanner.py
 from __future__ import annotations
+
 import concurrent.futures
 import logging
 import time
 from typing import List, Dict, Any, Optional, Generator
 from .fetcher import AdvancedFetcher
 from .parser import SWParser
-from .analyzer import SWAnalyzer 
+from .analyzer import SWAnalyzer
 from .security_analyzer import SecurityAnalyzer
 from .risk_assessor import RiskAssessor
 from .normalizer import URLNormalizer
-from .enhanced_analyzer import EnhancedAnalyzer, EnhancedAnalysisConfig  
+from .enhanced_analyzer import EnhancedAnalyzer, EnhancedAnalysisConfig
 from ..models.target import ScanTarget
 from ..models.result import SWResult
 
 logger = logging.getLogger(__name__)
-
 
 class SWScanner:
     def __init__(
@@ -28,9 +29,8 @@ class SWScanner:
         cookies: str | None = None,
         no_risk_assessment: bool = False,
         enable_ast_analysis: bool = True,
-        ast_max_depth: int = 0,                   
-        ast_same_origin_only: bool = True,
-        ast_request_timeout: int = 10,
+        ast_max_depth: int = 0,             
+        ast_request_timeout: int = 10,     
         enable_headless_analysis: bool = False,
         headless_timeout_ms: int = 30000,
         headless_max_routes: int = 25,
@@ -38,11 +38,18 @@ class SWScanner:
         headless_crawl_limit: int = 50,
         headless_backoff_attempts: int = 4,
         headless_backoff_ms: int = 500,
+        headless_prove_interception: bool = True,
+        headless_prove_precache: bool = True,
+        headless_prove_swr: bool = True,
+        headless_login_script: Optional[str] = None,
+        headless_login_wait_selector: Optional[str] = None,
+        headless_route_seeds: Optional[List[str]] = None,
     ):
         self.parallel = parallel
         self.timeout = timeout
         self.max_sw_bytes = max_sw_bytes
         self.max_routes = max_routes
+        self.user_agent = user_agent 
         self.fetcher = AdvancedFetcher(timeout=timeout, user_agent=user_agent)
         self.parser = SWParser()
         self.analyzer = SWAnalyzer()
@@ -56,10 +63,9 @@ class SWScanner:
         self.enable_headless_analysis = enable_headless_analysis
         self.enhanced_analyzer = EnhancedAnalyzer(
             EnhancedAnalysisConfig(
-                enable_ast=self.enable_ast_analysis,
-                enable_headless=self.enable_headless_analysis,
+                enable_ast=enable_ast_analysis,
+                enable_headless=enable_headless_analysis,
                 ast_max_depth=ast_max_depth,
-                ast_same_origin_only=ast_same_origin_only,
                 ast_request_timeout=ast_request_timeout,
                 headless_timeout_ms=headless_timeout_ms,
                 headless_max_routes=headless_max_routes,
@@ -67,8 +73,15 @@ class SWScanner:
                 headless_crawl_limit=headless_crawl_limit,
                 headless_backoff_attempts=headless_backoff_attempts,
                 headless_backoff_ms=headless_backoff_ms,
+                headless_prove_interception=headless_prove_interception,
+                headless_prove_precache=headless_prove_precache,
+                headless_prove_swr=headless_prove_swr,
+                headless_login_script=headless_login_script,
+                headless_login_wait_selector=headless_login_wait_selector,
+                headless_route_seeds=headless_route_seeds or [],
             )
         )
+
         self.stats = {
             "targets_processed": 0,
             "sw_found": 0,
@@ -114,6 +127,7 @@ class SWScanner:
                 return self._create_empty_result(target.url, status)
 
             sw_urls = self.parser.find_sw_registrations(html, target.url)
+
             if not sw_urls and probe:
                 for path in self.parser.get_common_sw_paths(target.url):
                     _, _, probe_status = self.fetcher.fetch_url(path, max_bytes=1024)
@@ -154,7 +168,9 @@ class SWScanner:
             workbox_detected, workbox_modules = self.analyzer.detect_workbox(sw_content)
             cache_names = self.analyzer.extract_cache_names(sw_content)
             routes = self.analyzer.extract_routes(sw_content, self.max_routes)
+
             security_findings = self.security_analyzer.analyze_security_patterns(sw_content, routes)
+
             if self.no_risk_assessment:
                 risk_assessment = {
                     "risk_score": 0,
@@ -184,13 +200,33 @@ class SWScanner:
                             "workbox_detected": workbox_detected,
                             "cache_names": cache_names,
                         },
-                        base_url_for_ast=sw_url,           
-                        effective_scope=effective_scope,    
-                        seed_routes=routes[:10],            
+                        base_url_for_ast=sw_url,        
+                        effective_scope=effective_scope,
+                        seed_routes=routes[:10],
+                        request_headers=self.headers,       
+                        cookies=self.cookies,               
+                        user_agent=self.user_agent,         
                     )
+
                     if not self.no_risk_assessment and enhanced_results.get("confidence_score"):
                         rs = int(risk_assessment["risk_score"] * enhanced_results["confidence_score"])
                         risk_assessment["risk_score"] = min(rs, 100)
+                        
+                    dyn = enhanced_results.get("headless_analysis") or {}
+                    labels = set(dyn.get("labels") or [])
+                    confidence = float(dyn.get("confidence") or 0.5)
+
+                    if not self.no_risk_assessment and labels:
+                        if "precaching" in labels:
+                            risk_assessment["risk_score"] = min(
+                                100, int(risk_assessment["risk_score"] * max(1.05, confidence))
+                            )
+                            
+                        if "intercepts_majority" in labels:
+                            risk_assessment["risk_score"] = min(
+                                100, int(risk_assessment["risk_score"] * max(1.10, confidence))
+                            )
+                            
                 except Exception as e:
                     logger.warning(f"Enhanced analysis failed: {e}")
 
@@ -209,7 +245,7 @@ class SWScanner:
                 workbox_modules=workbox_modules,
                 detected_patterns=security_findings.get("patterns_detected", {}),
                 security_findings=security_findings,
-                enhanced_analysis=enhanced_results,  
+                enhanced_analysis=enhanced_results,
             )
         except Exception as e:
             logger.error(f"Error analyzing SW {sw_url}: {e}")
