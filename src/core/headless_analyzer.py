@@ -1,192 +1,365 @@
+# src/core/headless_analyzer.py
 from __future__ import annotations
-import asyncio
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
-from ..models.exceptions import AnalysisException
+import json
+import time
+from dataclasses import dataclass, field, asdict
+from typing import Any, Dict, List, Optional, Tuple
 from ..utils.logger import get_logger
 
-logger = get_logger("headless_analyzer")
+logger = get_logger("headless")
+
+try:
+    from playwright.sync_api import sync_playwright, Response, Page
+    _PW_OK = True
+except Exception:
+    _PW_OK = False
 
 @dataclass
-class HeadlessAnalysisResult:
-    sw_registered: bool = False
-    sw_scope: str = ""
-    lifecycle_events: List[str] = field(default_factory=list)
-    intercepted_routes: List[Dict[str, Any]] = field(default_factory=list)
-    cache_operations: List[Dict[str, Any]] = field(default_factory=list)  
-    network_requests: List[Dict[str, Any]] = field(default_factory=list)
-    errors: List[str] = field(default_factory=list)
-    warnings: List[str] = field(default_factory=list)
-
-
-class HeadlessAnalyzer:
-    def __init__(self, headless: bool = True, timeout_ms: int = 30000):
-        self.headless = headless
-        self.timeout_ms = timeout_ms
-        self.playwright_available = self._check_playwright()
-
-    def _check_playwright(self) -> bool:
-        try:
-            from playwright.async_api import async_playwright  # noqa: F401
-            logger.info("Playwright detected — headless analysis enabled.")
-            return True
-        except Exception:
-            logger.info("Playwright not available — headless analysis disabled.")
-            return False
-
-    async def analyze_service_worker(self, url: str, routes_to_test: Optional[List[str]] = None) -> HeadlessAnalysisResult:
-        if not self.playwright_available:
-            raise AnalysisException("Playwright not available for headless analysis")
-
-        from playwright.async_api import async_playwright, Error as PWError
-
-        result = HeadlessAnalysisResult()
-        routes_to_test = routes_to_test or []
-
-        try:
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=self.headless)
-                context = await browser.new_context()  
-                page = await context.new_page()
-                page.on("request", lambda r: result.network_requests.append({
-                    "url": r.url, "method": r.method, "headers": dict(r.headers), "ts": asyncio.get_event_loop().time()
-                }))
-                page.on("response", lambda rsp: result.intercepted_routes.append({
-                    "url": rsp.url, "status": rsp.status, "served_by_sw": getattr(rsp, "from_service_worker", False)
-                }))
-
-                try:
-                    logger.info("Headless: navigating to %s", url)
-                    await page.goto(url, wait_until="networkidle", timeout=self.timeout_ms)
-                    await self._wait_for_sw(context, result)
-                    if result.sw_registered:
-                        await self._trigger_sw_events(page, result)
-                        if routes_to_test:
-                            await self._test_routes(page, routes_to_test, result)
-                except PWError as e:
-                    result.errors.append(f"Navigation error: {e}")
-
-                await browser.close()
-        except Exception as e:
-            logger.error("Headless analysis failed: %s", e)
-            result.errors.append(f"Headless analysis failed: {e}")
-
-        return result
-
-    async def _wait_for_sw(self, context, result: HeadlessAnalysisResult) -> None:
-        try:
-            await context.wait_for_event("serviceworker", timeout=self.timeout_ms)
-        except Exception:
-            pass
-
-        try:
-            for w in context.service_workers:
-                result.sw_registered = True
-                result.sw_scope = w.url or result.sw_scope
-        except Exception:
-            result.warnings.append("Could not enumerate service workers")
-
-    async def _trigger_sw_events(self, page, result: HeadlessAnalysisResult) -> None:
-        try:
-            await page.reload(wait_until="networkidle")
-        except Exception as e:
-            result.warnings.append(f"Reload failed: {e}")
-
-        try:
-            msg = await page.evaluate(
-                """
-                (async () => {
-                  if (!('serviceWorker' in navigator)) return 'no sw api';
-                  const reg = await navigator.serviceWorker.getRegistration().catch(() => null);
-                  if (!reg) return 'no registration';
-                  try {
-                    // Touch the registration to ensure activation
-                    return reg.scope || 'ok';
-                  } catch (e) { return 'inspect failed'; }
-                })()
-                """
-            )
-            if isinstance(msg, str) and msg not in ("ok", "no sw api", "no registration", "inspect failed"):
-                result.lifecycle_events.append(f"registration: {msg}")
-        except Exception:
-            pass
-
-    async def _test_routes(self, page, routes: List[str], result: HeadlessAnalysisResult) -> None:
-        parsed = urlparse(page.url or "")
-        base = f"{parsed.scheme}://{parsed.netloc}"
-        for r in routes[:10]:  # clamp
-            url = f"{base}{r}" if r.startswith("/") else r
-            try:
-                rsp = await page.goto(url, wait_until="domcontentloaded", timeout=10000)
-                if rsp:
-                    result.intercepted_routes.append({
-                        "url": url,
-                        "status": rsp.status,
-                        "served_by_sw": getattr(rsp, "from_service_worker", False),
-                    })
-            except Exception as e:
-                result.warnings.append(f"Route test failed for {url}: {e}")
-
-    def analyze_sync(self, url: str, routes_to_test: Optional[List[str]] = None) -> HeadlessAnalysisResult:
-        if not self.playwright_available:
-            raise AnalysisException("Playwright not available")
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        return loop.run_until_complete(self.analyze_service_worker(url, routes_to_test or []))
-
+class HeadlessConfig:
+    timeout_ms: int = 30000
+    backoff_attempts: int = 4
+    backoff_ms: int = 500
+    max_routes: int = 25
+    crawl_links: bool = True
+    crawl_limit: int = 50
+    prove_interception: bool = True
+    prove_precache: bool = True
+    prove_swr: bool = True
+    login_script_path: Optional[str] = None
+    login_wait_selector: Optional[str] = None
+    route_seeds: List[str] = field(default_factory=list)
+    extra_headers: Dict[str, str] = field(default_factory=dict)
 
 class HeadlessAnalysisManager:
-    def __init__(self, enable_headless: bool = False, headless: bool = True, timeout_ms: int = 30000):
-        analyzer = HeadlessAnalyzer(headless=headless, timeout_ms=timeout_ms)
-        self.enable_headless = enable_headless and analyzer.playwright_available
-        self.analyzer = analyzer if self.enable_headless else None
 
-    def validate_static_findings(self, static_results: Dict[str, Any], target_url: str) -> Dict[str, Any]:
-        if not self.enable_headless or not self.analyzer:
-            static_results["headless_analysis"] = {
-                "available": False,
-                "reason": "Headless disabled or Playwright not available",
+    def __init__(self, enable_headless: bool, config: Optional[HeadlessConfig] = None):
+        self.enabled = bool(enable_headless and _PW_OK)
+        self.cfg = config or HeadlessConfig()
+        if not _PW_OK:
+            logger.info("Playwright not available — headless analysis disabled.")
+
+    def validate_static_findings(
+        self,
+        static_findings: Dict[str, Any],
+        target_url: str,
+        seed_routes: Optional[List[str]] = None,
+        effective_scope: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not self.enabled:
+            return {
+                "headless_analysis": {
+                    "enabled": False,
+                    "reason": "Headless disabled or Playwright unavailable",
+                }
             }
-            return static_results
+
+        seeds = list(self.cfg.route_seeds or [])
+        if seed_routes:
+            for r in seed_routes[: max(0, self.cfg.max_routes - len(seeds))]:
+                if isinstance(r, str) and r.strip():
+                    seeds.append(r)
+        if "/" not in seeds:
+            seeds.insert(0, "/")
 
         try:
-            routes_to_test = list(static_results.get("routes_seen", []))[:10]
-            h = self.analyzer.analyze_sync(target_url, routes_to_test)
-            static_results["headless_analysis"] = {
-                "available": True,
-                "sw_registered": h.sw_registered,
-                "sw_scope": h.sw_scope,
-                "intercepted_routes_validated": [r for r in h.intercepted_routes if r.get("served_by_sw")],
-                "network_requests_observed": len(h.network_requests),
-                "errors": h.errors,
-                "warnings": h.warnings,
-            }
-            static_results["validation_confidence"] = self._confidence(static_results, h)
+            with sync_playwright() as pw:
+                browser = pw.chromium.launch(headless=True)
+                context = browser.new_context(
+                    ignore_https_errors=True,
+                    extra_http_headers=self.cfg.extra_headers or {}
+                )
+                page = context.new_page()
+
+                if self.cfg.login_script_path:
+                    try:
+                        with open(self.cfg.login_script_path, "r", encoding="utf-8") as f:
+                            content = f.read()
+                        context.add_init_script(content)
+                        logger.info("Injected login script.")
+                    except Exception as e:
+                        logger.warning(f"Unable to inject login script: {e}")
+
+                evidence = self._run_observed_session(page, target_url, seeds)
+
+                if self.cfg.login_wait_selector:
+                    try:
+                        page.wait_for_selector(self.cfg.login_wait_selector, timeout=self.cfg.timeout_ms)
+                        logger.info("Login wait selector satisfied.")
+                    except Exception:
+                        pass
+
+                if self.cfg.crawl_links:
+                    self._crawl_same_origin(page, evidence, max_pages=self.cfg.crawl_limit)
+
+                evidence["cache_audit"] = self._safe_cache_audit(page)
+
+                labels, conf, reasons = self._label_strategies(evidence)
+                evidence["labels"] = labels
+                evidence["confidence"] = conf
+                evidence["confidence_reasons"] = reasons
+
+                context.close()
+                browser.close()
+                return {"headless_analysis": evidence}
+
         except Exception as e:
-            logger.error("Headless validation failed: %s", e)
-            static_results["headless_analysis"] = {"available": True, "errors": [f"Headless failed: {e}"]}
-        return static_results
-
-    def _confidence(self, static_results: Dict[str, Any], h: HeadlessAnalysisResult) -> float:
-        score = 1.0
-        if h.sw_registered:
-            if static_results.get("sw_url"):
-                score *= 1.2
-            static_routes = set(static_results.get("routes_seen", []))
-            validated = {
-                r.get("url", "") for r in h.intercepted_routes if r.get("served_by_sw")
+            logger.warning(f"Headless validation failed: {e}")
+            return {
+                "headless_analysis": {
+                    "enabled": True,
+                    "error": str(e),
+                }
             }
-            if validated and static_routes:
-                overlap = {u for u in validated if any(u.endswith(sr) for sr in static_routes)}
-                if overlap:
-                    score *= 1.1 + (min(len(overlap), len(static_routes)) / max(1, len(static_routes))) * 0.5
-        else:
-            if static_results.get("sw_url"):
-                score *= 0.7
-        return min(score, 2.0)
 
-headless_manager = HeadlessAnalysisManager()
+    def _run_observed_session(self, page: Page, origin: str, seeds: List[str]) -> Dict[str, Any]:
+        evidence: Dict[str, Any] = {
+            "enabled": True,
+            "origin": origin,
+            "timeline": [],
+            "service_worker": {
+                "controller_ready": False,
+                "versions": [],
+                "registration": {},
+            },
+            "responses": [],   
+            "interception_stats": {"total": 0, "from_sw": 0},
+            "visited": [],
+        }
+
+        def record_resp(resp: Response):
+            try:
+                timing = resp.timing
+            except Exception:
+                timing = None
+
+            from_sw = False
+            try:
+                from_sw = bool(resp.from_service_worker)
+            except Exception:
+                pass
+            try:
+                url = resp.url
+                status = resp.status
+            except Exception:
+                return
+
+            ttfb = None
+            try:
+                if timing and "startTime" in timing and "responseStart" in timing:
+                    ttfb = max(0, int(timing["responseStart"] - timing["startTime"]))
+            except Exception:
+                pass
+
+            evidence["responses"].append({
+                "url": url,
+                "status": status,
+                "from_service_worker": from_sw,
+                "ttfb_ms": ttfb,
+            })
+            evidence["interception_stats"]["total"] += 1
+            if from_sw:
+                evidence["interception_stats"]["from_sw"] += 1
+
+        page.on("response", record_resp)
+
+        page.add_init_script("""
+            window.__swmap_route_log = [];
+            (function(){
+              const push = history.pushState;
+              history.pushState = function(s, t, url){
+                try { window.__swmap_route_log.push(String(url || '')); } catch(e){}
+                return push.apply(this, arguments);
+              };
+              window.addEventListener('hashchange', function(){
+                try { window.__swmap_route_log.push(String(location.href || '')); } catch(e){}
+              });
+            })();
+        """)
+
+        page.goto(origin, wait_until="load", timeout=self.cfg.timeout_ms)
+        evidence["visited"].append(origin)
+
+        sw_meta = self._wait_sw_ready_and_controller(page)
+        evidence["service_worker"]["controller_ready"] = sw_meta["controller_ready"]
+        evidence["service_worker"]["registration"] = sw_meta.get("registration") or {}
+        evidence["timeline"].extend(sw_meta.get("timeline", []))
+
+        for seed in seeds[: self.cfg.max_routes]:
+            if seed.startswith("http"):
+                url = seed
+            else:
+                url = origin.rstrip("/") + ("" if seed.startswith("/") else "/") + seed
+            try:
+                page.goto(url, wait_until="load", timeout=self.cfg.timeout_ms)
+                evidence["visited"].append(url)
+                self._harvest_spa_routes(page, evidence)
+            except Exception:
+                evidence["visited"].append(url + " (nav-error)")
+                continue
+
+        if self.cfg.prove_swr or self.cfg.prove_interception:
+            for seed in seeds[: min(5, self.cfg.max_routes)]:
+                url = origin.rstrip("/") + ("" if seed.startswith("/") else "/") + seed
+                try:
+                    page.goto(url, wait_until="load", timeout=self.cfg.timeout_ms)
+                    self._harvest_spa_routes(page, evidence)
+                except Exception:
+                    pass
+
+        return evidence
+
+    def _wait_sw_ready_and_controller(self, page: Page) -> Dict[str, Any]:
+        timeline: List[Dict[str, Any]] = []
+        start = time.time()
+        try:
+            res = page.evaluate("""
+                () => {
+                  if (!('serviceWorker' in navigator)) return {ready:false};
+                  return navigator.serviceWorker.ready.then(r => ({ready:true, scope: r.scope})).catch(()=>({ready:false}));
+                }
+            """)
+            if res and res.get("ready"):
+                timeline.append({"t": int((time.time()-start)*1000), "event": "sw.ready", "scope": res.get("scope")})
+        except Exception:
+            pass
+
+        controller_ready = False
+        for i in range(self.cfg.backoff_attempts):
+            try:
+                controller_ready = bool(page.evaluate("() => !!(navigator.serviceWorker && navigator.serviceWorker.controller)"))
+            except Exception:
+                controller_ready = False
+            if controller_ready:
+                timeline.append({"t": int((time.time()-start)*1000), "event": "sw.controller"})
+                break
+            time.sleep(self.cfg.backoff_ms / 1000.0)
+
+        registration = {}
+        try:
+            registration = page.evaluate("""
+                async () => {
+                  if (!('serviceWorker' in navigator)) return {};
+                  const regs = await navigator.serviceWorker.getRegistrations();
+                  if (!regs || !regs.length) return {};
+                  const r = regs[0];
+                  const d = { scope: r.scope, active: !!r.active, installing: !!r.installing, waiting: !!r.waiting };
+                  try { d.scriptURL = r.active?.scriptURL || r.installing?.scriptURL || r.waiting?.scriptURL || null; } catch(e){}
+                  return d;
+                }
+            """)
+            if registration:
+                timeline.append({"t": int((time.time()-start)*1000), "event": "sw.registration", "details": registration})
+        except Exception:
+            pass
+
+        return {"controller_ready": controller_ready, "registration": registration, "timeline": timeline}
+
+    def _harvest_spa_routes(self, page: Page, evidence: Dict[str, Any]) -> None:
+        try:
+            pushes = page.evaluate("() => (Array.isArray(window.__swmap_route_log) ? window.__swmap_route_log.splice(0) : [])")
+            origin = evidence.get("origin", "")
+            for raw in (pushes or []):
+                if not isinstance(raw, str):
+                    continue
+                url = raw if raw.startswith("http") else (origin.rstrip("/") + "/" + raw.lstrip("/"))
+                if url not in evidence["visited"]:
+                    evidence["visited"].append(url)
+        except Exception:
+            pass
+
+    def _safe_cache_audit(self, page: Page) -> Dict[str, Any]:
+        try:
+            return page.evaluate("""
+                async () => {
+                  if (typeof caches === 'undefined') return {available:false, names:[], entries:{}};
+                  const names = await caches.keys();
+                  const entries = {};
+                  for (const n of names) {
+                    try {
+                      const c = await caches.open(n);
+                      const reqs = await c.keys();
+                      entries[n] = reqs.map(r => r.url);
+                    } catch(e) {
+                      entries[n] = ["<error>"];
+                    }
+                  }
+                  return {available:true, names, entries};
+                }
+            """)
+        except Exception as e:
+            return {"available": False, "error": str(e)}
+
+    def _crawl_same_origin(self, page: Page, evidence: Dict[str, Any], max_pages: int = 50) -> None:
+        origin = evidence.get("origin", "")
+        seen = set(evidence.get("visited", []) or [])
+        q: List[str] = []
+
+        try:
+            anchors = page.eval_on_selector_all("a[href]", "els => els.map(e => e.getAttribute('href'))") or []
+        except Exception:
+            anchors = []
+
+        for a in anchors:
+            if not isinstance(a, str):
+                continue
+            url = a if a.startswith("http") else (origin.rstrip("/") + "/" + a.lstrip("/"))
+            if url.startswith(origin) and url not in seen:
+                q.append(url); seen.add(url)
+
+        while q and len(evidence["visited"]) < max_pages:
+            url = q.pop(0)
+            try:
+                page.goto(url, wait_until="load", timeout=self.cfg.timeout_ms)
+                evidence["visited"].append(url)
+                self._harvest_spa_routes(page, evidence)
+                anchors = page.eval_on_selector_all("a[href]", "els => els.map(e => e.getAttribute('href'))") or []
+                for a in anchors:
+                    if not isinstance(a, str):
+                        continue
+                    new_url = a if a.startswith("http") else (origin.rstrip("/") + "/" + a.lstrip("/"))
+                    if new_url.startswith(origin) and new_url not in seen:
+                        q.append(new_url); seen.add(new_url)
+            except Exception:
+                evidence["visited"].append(url + " (nav-error)")
+
+    def _label_strategies(self, ev: Dict[str, Any]) -> Tuple[List[str], float, List[str]]:
+        labels: List[str] = []
+        reasons: List[str] = []
+        conf = 0.5
+
+        # obvious precache
+        cache_names = (ev.get("cache_audit") or {}).get("names") or []
+        entries = (ev.get("cache_audit") or {}).get("entries") or {}
+        if any("workbox-precache" in n or "flutter" in n or "precache" in n for n in cache_names):
+            labels.append("precaching")
+            reasons.append("Cache names hint at precache.")
+            conf *= 1.15
+
+        stats = ev.get("interception_stats") or {}
+        from_sw = int(stats.get("from_sw") or 0)
+        total = int(stats.get("total") or 0)
+        if total >= 4 and from_sw / max(1, total) >= 0.5:
+            labels.append("intercepts_majority")
+            reasons.append(f"{from_sw}/{total} responses from SW.")
+            conf *= 1.1
+
+        if self._cfg_prove_swr(ev):
+            labels.append("staleWhileRevalidate?")  
+            reasons.append("Fast SW response followed by later network load observed.")
+            conf *= 1.05
+
+        return sorted(set(labels)), min(conf, 1.0), reasons
+
+    def _cfg_prove_swr(self, ev: Dict[str, Any]) -> bool:
+        if not self.cfg.prove_swr:
+            return False
+        seen = {}
+        for r in ev.get("responses") or []:
+            url = r.get("url")
+            fsw = bool(r.get("from_service_worker"))
+            if url not in seen:
+                seen[url] = fsw
+            else:
+                if seen[url] and not fsw:
+                    return True
+        return False
