@@ -1,4 +1,6 @@
+# src/core/ast_analyzer.py
 from __future__ import annotations
+
 import json
 import os
 import platform
@@ -6,42 +8,46 @@ import re
 import shutil
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from ..models.exceptions import AnalysisException
+
+from ..models.exceptions import AnalysisException 
 from ..utils.logger import get_logger
 
 logger = get_logger("ast_analyzer")
 
-class ASTAnalyzer:
-    def __init__(self, node_path: str = "node", workdir: Optional[str] = None, npm_path: Optional[str] = None):
-        self.node_path = node_path
-        self.npm_path = npm_path or self._find_npm()
-        self.workdir = Path(workdir or Path.home() / ".swmap" / "ast_bridge").resolve()
-        self.workdir.mkdir(parents=True, exist_ok=True)
+@dataclass
+class ASTAnalyzerConfig:
+    node_path: str = "node"    
+    max_depth: int = 2         
+    timeout_sec: int = 30      
 
+class ASTAnalyzer:
+
+    def __init__(
+        self,
+        node_path: str = "node",
+        workdir: Optional[str] = None,
+        npm_path: Optional[str] = None,
+        config: Optional[ASTAnalyzerConfig] = None,
+    ):
+
+        cfg = config or ASTAnalyzerConfig()
+
+        self.node_path = node_path or cfg.node_path
+        self.timeout_sec = cfg.timeout_sec
+        self.max_depth = cfg.max_depth
+        self.workdir = Path(workdir or (Path.home() / ".swmap" / "ast_bridge")).resolve()
+        self.workdir.mkdir(parents=True, exist_ok=True)
+        self.npm_path = npm_path or self._find_npm()
         self.has_node = self._check_node()
         self._ensure_package_layout()
         self.script_path = self.workdir / "ast_analyzer.js"
         if not self.script_path.exists():
             self.script_path.write_text(self._node_script(), encoding="utf-8")
-    def analyze_with_ast(self, javascript_code: str) -> Dict[str, Any]:
-        """
-        Analyze JavaScript code using Babel AST (if available) with safe fallbacks.
 
-        Returns a structured dict with:
-        {
-          imports: [...],
-          eventListeners: [...],
-          cacheOperations: [...],
-          fetchHandlers: [...],
-          workboxUsage: [...],
-          routes: [...],
-          strategies: [...],
-          dangerousPatterns: [...],
-          errors: [...]
-        }
-        """
+    def analyze_with_ast(self, javascript_code: str) -> Dict[str, Any]:
         if not javascript_code:
             return {
                 "imports": [],
@@ -73,11 +79,11 @@ class ASTAnalyzer:
                 cwd=str(self.workdir),
                 capture_output=True,
                 text=True,
-                timeout=45,
+                timeout=self.timeout_sec,
             )
             if proc.returncode != 0:
-                msg = proc.stderr.strip() or "Unknown Node error"
-                logger.warning("AST analysis process failed: %s", msg)
+                msg = (proc.stderr or proc.stdout or "").strip() or "Unknown Node error"
+                logger.warning("AST analysis process failed: %s", msg[-400:])
                 return self._fallback_analysis(javascript_code)
 
             try:
@@ -99,14 +105,17 @@ class ASTAnalyzer:
             ):
                 data.setdefault(k, [])
 
-            logger.info("AST analysis completed successfully (imports=%d, routes=%d)",
-                        len(data.get("imports", [])), len(data.get("routes", [])))
+            logger.info(
+                "AST analysis completed successfully (imports=%d, routes=%d)",
+                len(data.get("imports", [])),
+                len(data.get("routes", [])),
+            )
             return data
 
         except subprocess.TimeoutExpired:
             logger.warning("AST analysis timed out — using regex fallback.")
             return self._fallback_analysis(javascript_code)
-        except Exception as e:
+        except Exception as e:  
             logger.warning("AST analysis unexpected failure: %s — using regex fallback.", e)
             return self._fallback_analysis(javascript_code)
         finally:
@@ -115,11 +124,12 @@ class ASTAnalyzer:
             except OSError:
                 pass
 
+
     def _check_node(self) -> bool:
         try:
             proc = subprocess.run([self.node_path, "--version"], capture_output=True, text=True, timeout=10)
             if proc.returncode == 0:
-                logger.info("Node.js available: %s", proc.stdout.strip())
+                logger.info("Node.js available: %s", (proc.stdout or proc.stderr).strip())
                 return True
         except Exception:
             pass
@@ -161,6 +171,7 @@ class ASTAnalyzer:
         node_modules = self.workdir / "node_modules"
         if node_modules.exists():
             return True
+
         if not self.npm_path:
             logger.warning("npm executable not found.")
             return False
@@ -181,9 +192,10 @@ class ASTAnalyzer:
         except subprocess.TimeoutExpired:
             logger.warning("npm install timed out.")
             return False
-        except Exception as e:
+        except Exception as e:  
             logger.warning("npm install failed: %s", e)
             return False
+
     def _node_script(self) -> str:
         return r"""
 const fs = require('fs');
@@ -248,9 +260,9 @@ function analyzeServiceWorker(code) {
       CallExpression(path) {
         const { node } = path;
 
-        // importScripts(...)
+        // importScripts(...): classic SW pattern
         if (node.callee && node.callee.type === 'Identifier' && node.callee.name === 'importScripts') {
-          for (const arg of node.arguments || []) {
+          for (const arg of (node.arguments || [])) {
             if (arg.type === 'StringLiteral') {
               results.imports.push({
                 type: 'importScripts',
@@ -261,7 +273,19 @@ function analyzeServiceWorker(code) {
           }
         }
 
-        // addEventListener('fetch' | 'install' | ...)
+        // dynamic import('...') with string literal
+        if (node.callee && node.callee.type === 'Import') {
+          const first = node.arguments && node.arguments[0];
+          if (first && first.type === 'StringLiteral') {
+            results.imports.push({
+              type: 'dynamicImport',
+              source: first.value,
+              location: safeLoc(node)
+            });
+          }
+        }
+
+        // addEventListener('fetch' | 'install' | ... )
         if (node.callee && node.callee.type === 'MemberExpression') {
           const prop = node.callee.property;
           if (prop && prop.type === 'Identifier' && prop.name === 'addEventListener') {
@@ -278,7 +302,7 @@ function analyzeServiceWorker(code) {
           }
         }
 
-        // Cache operations
+        // Cache operations + Workbox usage + registerRoute
         if (node.callee && node.callee.type === 'MemberExpression') {
           const propName = node.callee.property && node.callee.property.name;
           const obj = node.callee.object;
@@ -324,7 +348,7 @@ function analyzeServiceWorker(code) {
       },
 
       VariableDeclarator(path) {
-        // new workbox.strategies.*
+        // new workbox.strategies.*(...)
         const init = path.node.init;
         if (init && init.type === 'NewExpression') {
           const callee = init.callee;
@@ -380,6 +404,7 @@ const code = fs.readFileSync(codePath, 'utf8');
 const out = analyzeServiceWorker(code);
 console.log(JSON.stringify(out, null, 2));
 """
+
     def _fallback_analysis(self, code: str) -> Dict[str, Any]:
         return {
             "imports": self._extract_imports_fallback(code),
@@ -397,6 +422,12 @@ console.log(JSON.stringify(out, null, 2));
         out: List[Dict[str, Any]] = []
         for m in re.finditer(r"importScripts\s*\(\s*['\"]([^'\"\)]+)['\"]", code, re.IGNORECASE):
             out.append({"type": "importScripts", "source": m.group(1), "location": "Unknown"})
+            
+        for m in re.finditer(r"import\s*\(\s*['\"]([^'\"\)]+)['\"]\s*\)", code, re.IGNORECASE):
+            out.append({"type": "dynamicImport", "source": m.group(1), "location": "Unknown"})
+
+        for m in re.finditer(r"import\s+[^;]*?\s+from\s+['\"]([^'\"\)]+)['\"]", code, re.IGNORECASE):
+            out.append({"type": "import", "source": m.group(1), "location": "Unknown"})
         return out
 
     def _extract_event_listeners_fallback(self, code: str) -> List[Dict[str, Any]]:
@@ -424,7 +455,10 @@ console.log(JSON.stringify(out, null, 2));
 
     def _extract_routes_fallback(self, code: str) -> List[Dict[str, Any]]:
         out: List[Dict[str, Any]] = []
-        for patt in (r"registerRoute\s*\(\s*['\"](/[^'\"]+)['\"]", r"route\s*\(\s*['\"](/[^'\"]+)['\"]"):
+        for patt in (
+            r"registerRoute\s*\(\s*['\"](/[^'\"]+)['\"]",
+            r"route\s*\(\s*['\"](/[^'\"]+)['\"]",
+        ):
             for m in re.finditer(patt, code, re.IGNORECASE):
                 out.append({"type": "routeRegistration", "location": "Unknown", "expression": m.group(0)})
         return out
