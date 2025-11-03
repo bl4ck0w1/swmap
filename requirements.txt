@@ -1,16 +1,17 @@
-# SWMap Dependencies
-# Core dependencies
+# --- Core runtime (matches pyproject [project.dependencies])
 requests>=2.28.0
 urllib3>=1.26.0
+httpx>=0.26.0
+chardet>=5.2.0
 
-# Optional dependencies for enhanced functionality
-psutil>=5.9.0; sys_platform != "win32"
+# --- CLI UX (optional in production, but useful for dev)
+rich>=13.0.0
 colorama>=0.4.6; sys_platform == "win32"
 
-# Headless (optional; better via extras: pip install ".[headless]")
+# --- Headless (optional; prefer `pip install .[headless]`)
 # playwright>=1.36.0
 
-# Development dependencies
+# --- Dev / QA
 pytest>=7.0.0
 pytest-asyncio>=0.21.0
 pytest-cov>=4.0.0
@@ -18,11 +19,12 @@ black>=23.0.0
 flake8>=6.0.0
 mypy>=1.0.0
 
-# Documentation
+# --- Docs (optional)
 sphinx>=6.0.0
 sphinx-rtd-theme>=1.0.0
 
-# Packaging
-setuptools>=65.0.0
-wheel>=0.37.0
+# --- Packaging
+setuptools>=69
+wheel>=0.41
 twine>=4.0.0
+
