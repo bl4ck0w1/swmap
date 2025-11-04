@@ -11,8 +11,13 @@ requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "SWMap Security", email = "security@swmap.dev" }]
 keywords = [
-  "security", "service-worker", "pwa", "reconnaissance",
-  "bug-bounty", "penetration-testing", "web-security",
+  "security",
+  "service-worker",
+  "pwa",
+  "reconnaissance",
+  "bug-bounty",
+  "penetration-testing",
+  "web-security",
 ]
 classifiers = [
   "Development Status :: 4 - Beta",
@@ -33,15 +38,20 @@ classifiers = [
   "Topic :: Software Development :: Testing",
   "Topic :: Utilities",
 ]
+
 dependencies = [
   "requests>=2.28.0",
   "urllib3>=1.26.0",
   "httpx>=0.26.0",
   "chardet>=5.2.0",
+  "beautifulsoup4>=4.12.0",
+  "lxml>=4.9.0",
+  "rich>=13.0.0",
+  "brotlicffi>=1.1.0; platform_python_implementation != 'PyPy'",
+  "brotli>=1.1.0; platform_python_implementation == 'PyPy'",
 ]
 
 [project.optional-dependencies]
-# Developer tooling
 dev = [
   "pytest>=7.0.0",
   "pytest-asyncio>=0.21.0",
@@ -51,24 +61,23 @@ dev = [
   "mypy>=1.0.0",
 ]
 
-# Nice console UX on Windows/macOS/Linux
-cli = ["rich>=13.0.0", "colorama>=0.4.6; sys_platform == 'win32'"]
+headless = [
+  "playwright>=1.36.0",
+]
 
-# Headless runtime validation
-headless = ["playwright>=1.36.0"]
-
-# Everything except Playwright
 full = [
   "psutil>=5.9.0; sys_platform != 'win32'",
   "colorama>=0.4.6; sys_platform == 'win32'",
-  "rich>=13.0.0",
 ]
 
 enhanced = [
   "psutil>=5.9.0; sys_platform != 'win32'",
   "colorama>=0.4.6; sys_platform == 'win32'",
-  "rich>=13.0.0",
   "playwright>=1.36.0",
+]
+
+perf = [
+  "orjson>=3.10.0",
 ]
 
 [project.urls]
@@ -82,7 +91,6 @@ swmap = "swmap:main"
 [tool.setuptools.dynamic]
 version = { attr = "config.constants.get_version" }
 
-# ---- src discovery ----
 [tool.setuptools.packages.find]
 include = ["src", "src.*", "config", "config.*"]
 exclude = ["tests*"]
@@ -91,7 +99,6 @@ exclude = ["tests*"]
 src = "src"
 config = "config"
 
-# Root module for CLI
 [tool.setuptools]
 py-modules = ["swmap"]
 include-package-data = true
@@ -115,3 +122,5 @@ markers = [
   "slow: marks tests as slow (deselect with '-m \"not slow\"')",
   "integration: marks tests as integration tests",
 ]
+
+
