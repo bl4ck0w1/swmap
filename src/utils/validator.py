@@ -2,16 +2,19 @@ import re
 import os
 import ipaddress
 from urllib.parse import urlparse, urljoin
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple
 from ..models.exceptions import (
     URLValidationException,
-    SecurityException,
     ValidationException,
 )
 
 class URLValidator:
-    def __init__(self):
-        self.domain_pattern = re.compile(r"^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$")
+    def __init__(self, allow_internal: bool = False):
+        self.allow_internal = allow_internal
+        self.domain_pattern = re.compile(
+            r"^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$"
+        )
+
         self.private_networks = [
             r"^10\.",
             r"^192\.168\.",
@@ -35,9 +38,17 @@ class URLValidator:
             r"^255\.255\.255\.255$",
         ]
 
-    def validate_url(self, url: str, base_url: Optional[str] = None) -> Tuple[bool, str]:
+    def validate_url(
+        self,
+        url: str,
+        base_url: Optional[str] = None,
+        allow_internal: Optional[bool] = None,
+    ) -> Tuple[bool, str]:
+
         if not url or not isinstance(url, str):
             return False, "URL must be a non-empty string"
+
+        allow_internal = self.allow_internal if allow_internal is None else allow_internal
 
         if base_url and not url.startswith(("http://", "https://")):
             try:
@@ -54,7 +65,7 @@ class URLValidator:
             if not parsed.netloc:
                 return False, "Missing network location"
 
-            ok, err = self._validate_netloc(parsed.netloc)
+            ok, err = self._validate_netloc(parsed.netloc, allow_internal=allow_internal)
             if not ok:
                 return False, err
 
@@ -62,7 +73,7 @@ class URLValidator:
             if not ok:
                 return False, err
 
-            ok, err = self._security_checks(parsed)
+            ok, err = self._security_checks(parsed, allow_internal=allow_internal)
             if not ok:
                 return False, err
 
@@ -71,56 +82,13 @@ class URLValidator:
         except Exception as e:
             return False, f"URL parsing error: {e}"
 
-    def _validate_netloc(self, netloc: str) -> Tuple[bool, str]:
-        hostname = netloc.split(":", 1)[0]
-
-        try:
-            ip = ipaddress.ip_address(hostname)
-            if ip.is_private or ip.is_loopback or ip.is_link_local:
-                return False, f"Private or local IP address: {hostname}"
-            if ip.is_multicast or ip.is_reserved:
-                return False, f"Special IP address: {hostname}"
-            return True, ""
-        except ValueError:
-            pass  
-
-        if not self.domain_pattern.match(hostname):
-            return False, f"Invalid domain format: {hostname}"
-
-        for pat in self.suspicious_patterns:
-            if re.search(pat, hostname, re.IGNORECASE):
-                return False, f"Suspicious domain pattern: {hostname}"
-
-        tld = hostname.split(".")[-1].lower()
-        if len(tld) < 2 or len(tld) > 24:
-            return False, f"Invalid TLD: {tld}"
-
-        return True, ""
-
-    def _validate_path(self, path: str) -> Tuple[bool, str]:
-        if ".." in path:
-            return False, "Path contains traversal sequences"
-        if re.search(r'[<>"\']', path):
-            return False, "Path contains dangerous characters"
-        if len(path) > 2048:
-            return False, "Path too long"
-        return True, ""
-
-    def _security_checks(self, parsed) -> Tuple[bool, str]:
-        for pat in self.private_networks:
-            if re.search(pat, parsed.netloc):
-                return False, "Private network address detected"
-
-        if parsed.username or parsed.password:
-            return False, "Credentials in URL are not allowed"
-
-        if parsed.query and len(parsed.query) > 2048:
-            return False, "Query string too long"
-
-        return True, ""
-
-    def normalize_url(self, url: str, base_url: Optional[str] = None) -> str:
-        valid, err = self.validate_url(url, base_url)
+    def normalize_url(
+        self,
+        url: str,
+        base_url: Optional[str] = None,
+        allow_internal: Optional[bool] = None,
+    ) -> str:
+        valid, err = self.validate_url(url, base_url, allow_internal=allow_internal)
         if not valid:
             raise URLValidationException(f"URL validation failed: {err}")
 
@@ -142,6 +110,58 @@ class URLValidator:
 
         return f"{scheme}://{netloc}{path}"
 
+    def _validate_netloc(self, netloc: str, allow_internal: bool) -> Tuple[bool, str]:
+        hostname = netloc.split(":", 1)[0]
+
+        try:
+            ip = ipaddress.ip_address(hostname)
+            if ip.is_private or ip.is_loopback or ip.is_link_local:
+                if allow_internal:
+                    return True, ""
+                return False, f"Private or local IP address: {hostname}"
+            if ip.is_multicast or ip.is_reserved:
+                return False, f"Special IP address: {hostname}"
+            return True, ""
+        except ValueError:
+            pass
+
+        if not self.domain_pattern.match(hostname):
+            return False, f"Invalid domain format: {hostname}"
+
+        for pat in self.suspicious_patterns:
+            if re.search(pat, hostname, re.IGNORECASE):
+                if allow_internal:
+                    break
+                return False, f"Suspicious domain pattern: {hostname}"
+
+        tld = hostname.split(".")[-1].lower()
+        if len(tld) < 2 or len(tld) > 24:
+            return False, f"Invalid TLD: {tld}"
+
+        return True, ""
+
+    def _validate_path(self, path: str) -> Tuple[bool, str]:
+        if ".." in path:
+            return False, "Path contains traversal sequences"
+        if re.search(r'[<>"\']', path):
+            return False, "Path contains dangerous characters"
+        if len(path) > 2048:
+            return False, "Path too long"
+        return True, ""
+
+    def _security_checks(self, parsed, allow_internal: bool) -> Tuple[bool, str]:
+        if not allow_internal:
+            for pat in self.private_networks:
+                if re.search(pat, parsed.netloc):
+                    return False, "Private network address detected"
+
+        if parsed.username or parsed.password:
+            return False, "Credentials in URL are not allowed"
+
+        if parsed.query and len(parsed.query) > 2048:
+            return False, "Query string too long"
+
+        return True, ""
 
 class InputSanitizer:
     def __init__(self):
@@ -163,11 +183,9 @@ class InputSanitizer:
     def sanitize_string(self, input_str: str, max_length: int = 4096) -> str:
         if not input_str:
             return ""
-
         s = input_str[:max_length]
         for p in self.compiled_patterns:
             s = p.sub("", s)
-            
         s = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", "", s)
         s = " ".join(s.split())
         return s
@@ -193,7 +211,12 @@ class InputSanitizer:
             name = root[: max(1, 255 - len(ext))] + ext
         return name or "unknown"
 
-    def validate_integer(self, value: Any, min_val: Optional[int] = None, max_val: Optional[int] = None) -> int:
+    def validate_integer(
+        self,
+        value: Any,
+        min_val: Optional[int] = None,
+        max_val: Optional[int] = None,
+    ) -> int:
         try:
             iv = int(value)
         except (ValueError, TypeError):
