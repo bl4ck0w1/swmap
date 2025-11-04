@@ -59,7 +59,10 @@ class OutputFormatter:
         if format_type == "tsv":
             return SWResult.get_tsv_header()
         if format_type == "csv":
-            return "origin,sw_url,effective_scope,http_status,has_swa,workbox,cache_names,routes_seen,risk_level,security_flags,risk_score"
+            return (
+                "origin,sw_url,effective_scope,http_status,has_swa,workbox,cache_names,"
+                "routes_seen,risk_level,security_flags,risk_score"
+            )
         return ""
 
 
@@ -75,18 +78,27 @@ class ResultSerializer:
         include_header: bool = True,
         risk_threshold: int = 0,
         only_high_risk: bool = False,
+        tool_version: str = "0.1.0",
+        schema_version: str = "1.0.0",
     ):
         filtered = self._filter_results(results, risk_threshold, only_high_risk)
         filtered.sort(key=lambda x: x.risk_score, reverse=True)
 
         ft = format_type.lower()
+
         if ft == "json":
             data = [r.to_dict(include_details=True) for r in filtered]
             json.dump(data, output_file, indent=2, ensure_ascii=False)
             output_file.write("\n")
             return
 
+        if ft == "jsonl":
+            for r in filtered:
+                output_file.write(self.formatter._format_json(r, pretty=False) + "\n")
+            return
+
         if include_header and ft in ("tsv", "csv"):
+            output_file.write(f"# tool=swmap version={tool_version} schema={schema_version}\n")
             output_file.write(self.formatter.get_header(ft) + "\n")
 
         for r in filtered:
