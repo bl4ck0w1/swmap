@@ -13,7 +13,6 @@ class MatchResult:
         if self.context is None:
             self.context = {}
 
-
 class PatternMatcher:
     def __init__(self):
         self.patterns: Dict[str, str] = {}
@@ -66,10 +65,17 @@ class PatternMatcher:
                         start = max(0, i - context_lines)
                         end = min(len(lines), i + context_lines + 1)
                         ctx_matches.append(
-                            {"match": m, "line_number": i + 1, "context": "\n".join(lines[start:end])}
+                            {
+                                "match": m,
+                                "line_number": i + 1,
+                                "context": "\n".join(lines[start:end]),
+                            }
                         )
                         break
-            res.context = {"matches_with_context": ctx_matches, "total_context_matches": len(ctx_matches)}
+            res.context = {
+                "matches_with_context": ctx_matches,
+                "total_context_matches": len(ctx_matches),
+            }
         return results
 
 
@@ -84,12 +90,14 @@ class SecurityPatterns:
             "sw_register_template": r"navigator\s*\.\s*serviceWorker\s*\.\s*register\s*\(\s*`([^`]+)`",
             "sw_register_new": r"new\s+ServiceWorker\s*\(\s*['\"]([^'\"]+)['\"]",
             "sw_register_workbox": r"workbox\s*\.\s*.*\.register\s*\(\s*['\"]([^'\"]+)['\"]",
+            "sw_common_names": r"(?:['\"])(?:sw\.js|service-worker\.js|firebase-messaging-sw\.js)(?:['\"])",
         }
 
         import_patterns = {
             "import_scripts_basic": r"importScripts\s*\(\s*['\"]([^'\"]+)['\"]",
             "import_scripts_template": r"importScripts\s*\(\s*`([^`]+)`",
             "import_scripts_multiple": r"importScripts\s*\(\s*([^)]+)\s*\)",
+            "import_scripts_remote": r"importScripts\s*\(\s*['\"]https?://[^'\"]+['\"]",
         }
 
         cache_patterns = {
@@ -124,6 +132,15 @@ class SecurityPatterns:
             "user_routes": r"[\'\"`](/user[a-zA-Z0-9_\-./]*)[\'\"`]",
             "admin_routes": r"[\'\"`](/admin[a-zA-Z0-9_\-./]*)[\'\"`]",
             "generic_routes": r"[\'\"`](/[a-zA-Z0-9_\-./]{2,})[\'\"`]",
+            "dashboard_routes": r"[\'\"`](/dashboard[a-zA-Z0-9_\-./]*)[\'\"`]",
+            "graphql_routes": r"[\'\"`](/graphql[a-zA-Z0-9_\-./]*)[\'\"`]",
+            "versioned_api_routes": r"[\'\"`](/api/v[0-9]+/[a-zA-Z0-9_\-./]*)[\'\"`]",
+        }
+
+        sensitive_refs = {
+            "manifest_json": r"[\'\"`](/manifest\.json)[\'\"`]",
+            "config_json": r"[\'\"`](/config(?:uration)?\.json)[\'\"`]",
+            "env_json": r"[\'\"`](/env\.json)[\'\"`]",
         }
 
         all_patterns: Dict[str, str] = {}
@@ -133,6 +150,7 @@ class SecurityPatterns:
         all_patterns.update(workbox_patterns)
         all_patterns.update(security_patterns)
         all_patterns.update(route_patterns)
+        all_patterns.update(sensitive_refs)
         self.matcher.add_patterns(all_patterns)
 
     def analyze_service_worker(self, script_content: str) -> Dict[str, Any]:
@@ -145,9 +163,26 @@ class SecurityPatterns:
             "caches": self._extract_category(results, "cache"),
             "workbox": self._extract_category(results, "workbox"),
             "security_issues": self._extract_category(
-                results, ["eval", "function", "settimeout", "setinterval", "inner_html", "document_write"]
+                results,
+                ["eval", "function", "settimeout", "setinterval", "inner_html", "document_write"],
             ),
-            "routes": self._extract_category(results, ["api", "auth", "user", "admin", "generic_routes"]),
+            "routes": self._extract_category(
+                results,
+                [
+                    "api",
+                    "auth",
+                    "user",
+                    "admin",
+                    "generic_routes",
+                    "dashboard_routes",
+                    "graphql_routes",
+                    "versioned_api_routes",
+                ],
+            ),
+            "sensitive_refs": self._extract_category(
+                results,
+                ["manifest_json", "config_json", "env_json"],
+            ),
         }
         analysis["summary"] = {
             "total_patterns_matched": len(results),
@@ -157,6 +192,7 @@ class SecurityPatterns:
             "has_workbox": bool(analysis["workbox"]),
             "has_security_issues": bool(analysis["security_issues"]),
             "has_routes": bool(analysis["routes"]),
+            "has_sensitive_refs": bool(analysis["sensitive_refs"]),
         }
         return analysis
 
@@ -182,6 +218,7 @@ class SecurityPatterns:
                 elif "strategies" in name:
                     modules.add("strategies")
         return is_workbox, sorted(modules)
+
 
 pattern_matcher = PatternMatcher()
 security_patterns = SecurityPatterns()
