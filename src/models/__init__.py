@@ -6,6 +6,7 @@ from .risk_models import (
     PatternDetection,
     RiskLevel,
     SecurityFlag,
+    RiskBreakdown,  
 )
 from .exceptions import (
     SWMapException,
@@ -33,6 +34,7 @@ __all__ = [
     "PatternDetection",
     "RiskLevel",
     "SecurityFlag",
+    "RiskBreakdown",  
     "SWMapException",
     "NetworkException",
     "SecurityException",
