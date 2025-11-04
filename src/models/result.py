@@ -1,8 +1,15 @@
+# src/models/result.py
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Union
 import time
 import json
 from .risk_models import RiskAssessment, SecurityFindings, RiskLevel
+
+TOOL_NAME = "swmap"
+TOOL_VERSION = "0.1.0"
+RESULT_SCHEMA_VERSION = "1.0.0"
+SUMMARY_SCHEMA_VERSION = "1.0.0"
+
 
 @dataclass
 class SWResult:
@@ -11,26 +18,34 @@ class SWResult:
     effective_scope: str
     http_status: int
     response_headers: Dict[str, str] = field(default_factory=dict)
-
-    has_swa: bool = False 
+    schema_version: str = RESULT_SCHEMA_VERSION
+    tool_name: str = TOOL_NAME
+    tool_version: str = TOOL_VERSION
+    has_swa: bool = False
     workbox: bool = False
     workbox_modules: List[str] = field(default_factory=list)
     cache_names: List[str] = field(default_factory=list)
     routes_seen: List[str] = field(default_factory=list)
     import_scripts: List[str] = field(default_factory=list)
-
     risk_score: int = 0
     risk_level: Union[RiskLevel, str] = RiskLevel.INFO
     security_flags: List[str] = field(default_factory=list)
     detected_patterns: Dict[str, bool] = field(default_factory=dict)
-
     risk_assessment: Optional[RiskAssessment] = None
     security_findings: Optional[Union[SecurityFindings, Dict[str, Any]]] = None
 
+    enhanced_analysis: Dict[str, Any] = field(default_factory=dict)
+    block_reason: Optional[str] = None        
+    discovery_path: str = "none"
+    outcome: str = "NO_SW_EVIDENCE"
+    labels: List[str] = field(default_factory=list)
+    discovery_hints: Dict[str, Any] = field(default_factory=dict)
+    error_class: Optional[str] = None
     scan_timestamp: float = field(default_factory=time.time)
     scan_duration: float = 0.0
     error: Optional[str] = None
     warnings: List[str] = field(default_factory=list)
+    framework_artifacts: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         if isinstance(self.risk_level, str):
@@ -43,9 +58,19 @@ class SWResult:
         self.cache_names = sorted(set(self.cache_names))
         self.routes_seen = sorted(set(self.routes_seen))
         self.security_flags = sorted(set(self.security_flags))
+        if self.labels:
+            seen = set()
+            deduped = []
+            for l in self.labels:
+                if l not in seen:
+                    seen.add(l)
+                    deduped.append(l)
+            self.labels = deduped
 
     @property
     def has_service_worker(self) -> bool:
+        if self.outcome == "FOUND_SW":
+            return True
         return bool(self.sw_url and self.http_status == 200)
 
     @property
@@ -72,6 +97,14 @@ class SWResult:
         if warning and warning not in self.warnings:
             self.warnings.append(warning)
 
+    def add_label(self, label: str):
+        if label and label not in self.labels:
+            self.labels.append(label)
+
+    def add_discovery_hint(self, key: str, value: Any):
+        if key:
+            self.discovery_hints[key] = value
+
     def to_tsv(self) -> str:
         fields = [
             self.origin,
@@ -94,7 +127,10 @@ class SWResult:
         return "\t".join(safe)
 
     def to_dict(self, include_details: bool = False) -> Dict[str, Any]:
-        base = {
+        base: Dict[str, Any] = {
+            "schema_version": self.schema_version,
+            "tool_name": self.tool_name,
+            "tool_version": self.tool_version,
             "origin": self.origin,
             "sw_url": self.sw_url,
             "effective_scope": self.effective_scope,
@@ -110,6 +146,12 @@ class SWResult:
             "risk_level": self.risk_level.value,
             "security_flags": self.security_flags,
             "detected_patterns": self.detected_patterns,
+            "discovery_path": self.discovery_path,
+            "outcome": self.outcome,
+            "block_reason": self.block_reason,
+            "labels": self.labels,
+            "discovery_hints": self.discovery_hints,
+            "error_class": self.error_class,
             "scan_timestamp": self.scan_timestamp,
             "scan_duration": self.scan_duration,
             "error": self.error,
@@ -130,6 +172,12 @@ class SWResult:
                 base["security_findings"] = self.security_findings.to_dict()
             elif isinstance(self.security_findings, dict):
                 base["security_findings"] = self.security_findings
+
+        if include_details and self.enhanced_analysis:
+            base["enhanced_analysis"] = self.enhanced_analysis
+
+        if include_details and self.framework_artifacts:
+            base["framework_artifacts"] = self.framework_artifacts
 
         return base
 
@@ -161,6 +209,9 @@ class ScanSummary:
     start_time: float
     end_time: float
     config: Dict[str, Any] = field(default_factory=dict)
+    schema_version: str = SUMMARY_SCHEMA_VERSION
+    tool_name: str = TOOL_NAME
+    tool_version: str = TOOL_VERSION
     total_targets: int = 0
     targets_processed: int = 0
     targets_with_sw: int = 0
@@ -237,6 +288,9 @@ class ScanSummary:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
+            "schema_version": self.schema_version,
+            "tool_name": self.tool_name,
+            "tool_version": self.tool_version,
             "scan_id": self.scan_id,
             "start_time": self.start_time,
             "end_time": self.end_time,
