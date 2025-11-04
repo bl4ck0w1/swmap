@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 from setuptools import setup, find_packages
 from pathlib import Path
-this_directory = Path(__file__).parent
-long_description = (this_directory / "README.md").read_text(encoding="utf-8")
 
 def get_version():
     try:
-        with open('config/constants.py', 'r', encoding='utf-8') as f:
-            for line in f:
-                if line.startswith('__version__'):
-                    return line.split('=')[1].strip().strip('"\'')
+        from config.constants import get_version as gv 
+        return gv()
     except Exception:
-        return "1.0.0"
+        return "0.0.0"
+
+this_directory = Path(__file__).parent
+try:
+    long_description = (this_directory / "README.md").read_text(encoding="utf-8")
+except Exception:
+    long_description = "Service Worker Security Analyzer"
 
 setup(
     name="swmap",
@@ -21,43 +23,54 @@ setup(
     long_description_content_type="text/markdown",
     author="SWMap Security",
     author_email="security@swmap.dev",
-    url="https://github.com/bl4ck0w1/swmap.git",
-    packages=find_packages(include=['src', 'src.*', 'config', 'config.*']),
-    package_dir={'src': 'src', 'config': 'config'},
-    package_data={'config': ['*.py'], 'src': ['**/*.py']},
+    url="https://github.com/bl4ck0w1/swmap",
+    packages=find_packages(include=["src", "src.*", "config", "config.*"]),
+    package_dir={"src": "src", "config": "config"},
     include_package_data=True,
     py_modules=["swmap"],
     python_requires=">=3.9",
     install_requires=[
         "requests>=2.28.0",
         "urllib3>=1.26.0",
+        "httpx>=0.26.0",
+        "chardet>=5.2.0",
+        "beautifulsoup4>=4.12.0",
+        "lxml>=4.9.0",
+        "rich>=13.0.0",
+        "brotlicffi>=1.1.0; platform_python_implementation != 'PyPy'",
+        "brotli>=1.1.0; platform_python_implementation == 'PyPy'",
     ],
     extras_require={
-        'dev': [
-            'pytest>=7.0.0',
-            'pytest-cov>=4.0.0',
-            'pytest-asyncio>=0.21.0',
-            'black>=23.0.0',
-            'flake8>=6.0.0',
-            'mypy>=1.0.0',
+        "dev": [
+            "pytest>=7.0.0",
+            "pytest-asyncio>=0.21.0",
+            "pytest-cov>=4.0.0",
+            "black>=23.0.0",
+            "flake8>=6.0.0",
+            "mypy>=1.0.0",
         ],
-        'full': [
-            'psutil>=5.9.0; sys_platform != "win32"',
-            'colorama>=0.4.6; sys_platform == "win32"',
+        "cli": [
+            "rich>=13.0.0",
+            "colorama>=0.4.6; sys_platform == 'win32'",
         ],
-        'headless': [
-            'playwright>=1.36.0',
+        "full": [
+            "psutil>=5.9.0; sys_platform != 'win32'",
+            "colorama>=0.4.6; sys_platform == 'win32'",
+            "rich>=13.0.0",
         ],
-        'enhanced': [
-            'psutil>=5.9.0; sys_platform != "win32"',
-            'colorama>=0.4.6; sys_platform == "win32"',
-            'playwright>=1.36.0',
+        "headless": ["playwright>=1.36.0"],
+        "enhanced": [
+            "psutil>=5.9.0; sys_platform != 'win32'",
+            "colorama>=0.4.6; sys_platform == 'win32'",
+            "rich>=13.0.0",
+            "playwright>=1.36.0",
+        ],
+        "perf": [
+            "orjson>=3.10.0",
         ],
     },
     entry_points={
-        'console_scripts': [
-            'swmap=swmap:main',
-        ],
+        "console_scripts": ["swmap=swmap:main"],
     },
     classifiers=[
         "Development Status :: 4 - Beta",
