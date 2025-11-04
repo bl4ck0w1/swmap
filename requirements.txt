@@ -1,17 +1,32 @@
-# --- Core runtime (matches pyproject [project.dependencies])
+# =========================
+# SWMap Runtime Dependencies
+# =========================
+
+# Core HTTP stack (matches src/core/fetcher expectations)
 requests>=2.28.0
 urllib3>=1.26.0
 httpx>=0.26.0
 chardet>=5.2.0
 
-# --- CLI UX (optional in production, but useful for dev)
+# Brotli / brotli-cffi for compressed responses in some targets
+# Prefer brotlicffi (pure CFFI, widely available); fall back to brotli if unavailable.
+brotlicffi>=1.1.0; platform_python_implementation != "PyPy"
+brotli>=1.1.0; platform_python_implementation == "PyPy"
+
+# HTML parsing (our parser.py tries BeautifulSoup + lxml first, then regex)
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+
+# CLI / UX
 rich>=13.0.0
 colorama>=0.4.6; sys_platform == "win32"
 
-# --- Headless (optional; prefer `pip install .[headless]`)
+# Headless (optional; better installed via extras: pip install ".[headless]")
 # playwright>=1.36.0
 
-# --- Dev / QA
+# =========================
+# Dev / QA
+# =========================
 pytest>=7.0.0
 pytest-asyncio>=0.21.0
 pytest-cov>=4.0.0
@@ -19,12 +34,16 @@ black>=23.0.0
 flake8>=6.0.0
 mypy>=1.0.0
 
-# --- Docs (optional)
+# =========================
+# Docs (optional)
+# =========================
 sphinx>=6.0.0
 sphinx-rtd-theme>=1.0.0
 
-# --- Packaging
-setuptools>=69
-wheel>=0.41
+# =========================
+# Packaging
+# =========================
+setuptools>=69.0.0
+wheel>=0.41.0
 twine>=4.0.0
-
+orjson>=3.10.0  # optional, faster JSON for big scans
