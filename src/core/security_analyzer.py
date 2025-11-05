@@ -1,186 +1,231 @@
 import re
 import logging
-from typing import List, Dict, Set, Optional, Tuple
+from typing import List, Dict, Optional, Any, Tuple
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
+_SENSITIVE_ROUTE_RE = [
+    r'/api(?:/|$)',
+    r'/auth(?:/|$)',
+    r'/user(?:/|$)',
+    r'/admin(?:/|$)',
+    r'/profile(?:/|$)',
+    r'/account(?:/|$)',
+    r'/settings(?:/|$)',
+    r'/billing(?:/|$)',
+    r'/payment(?:/|$)',
+    r'/token(?:/|$)',
+    r'/session(?:/|$)',
+    r'/private(?:/|$)',
+    r'/secure(?:/|$)',
+    r'/graphql(?:/|$)',
+]
+_COMPILED_SENSITIVE = [re.compile(p, re.IGNORECASE) for p in _SENSITIVE_ROUTE_RE]
+_WB_ROUTE_RE = re.compile( r'workbox\.routing\.registerRoute\s*\(\s*(?P<matcher>[^,]+?)\s*,\s*(?P<handler>[^)]+)\)', re.IGNORECASE | re.DOTALL )
+_WB_STRATEGY_RE = re.compile( r'workbox\.strategies\.(?P<strategy>[A-Za-z]+)\s*\(', re.IGNORECASE)
+
+_PATTERNS = {
+    "eval_like": [r'\beval\s*\(', r'new\s+Function\s*\(',
+                  r'setTimeout\s*\(\s*[^"\']', r'setInterval\s*\(\s*[^"\']'],
+    "third_party_imports": [r'importScripts\s*\(\s*[\'"](https?://[^\'"]+)[\'"]'],
+    "cache_ops": [r'caches?\.\s*open\s*\(', r'cache\.put\s*\(', r'addAll\s*\(',
+                  r'precacheAndRoute\s*\(', r'__WB_MANIFEST'],
+    "authy_fetch": [r'credentials\s*:\s*[\'"]include[\'"]',
+                    r'headers\s*:\s*\{[^}]*authorization\s*:',
+                    r'fetch\s*\(\s*["\'](?:/|https?://)[^"\']*(?:auth|login|token|session)[^"\']*["\']',
+                    r'request\.clone\s*\('],
+    "activation_aggr": [r'self\.skipWaiting\s*\(\s*\)', r'clients\.claim\s*\(\s*\)'],
+    "broadcast_leak": [r'new\s+BroadcastChannel\s*\(', r'postMessage\s*\('],
+}
+
+_FRAMEWORKS = {
+    "angular": [r'ngsw-worker\.js', r'ngsw\.json', r'ngsw:'],
+    "flutter": [r'flutter_service_worker\.js', r'AssetManifest\.json', r'RESOURCES\s*=\s*\{'],
+}
+
 class SecurityAnalyzer:
     def __init__(self):
-        self.security_patterns = {
-            'eval_usage': [
-                r'\beval\s*\(',
-                r'new\s+Function\s*\(',
-                r'setTimeout\s*\(\s*[^"\']',
-                r'setInterval\s*\(\s*[^"\']',
-            ],
-            'third_party_imports': [
-                r'importScripts\s*\(\s*[\'"](https?://[^\'"]+)[\'"]',
-            ],
-            'cache_poisoning_risk': [
-                r'fetch\([^)]*\)\.then\([^)]*cache\.put',
-                r'cache\.put\([^)]*fetch\([^)]*\)',
-                r'workbox\.strategies\.(?:CacheFirst|StaleWhileRevalidate)',
-            ],
-            'background_sync': [
-                r'self\.addEventListener\s*\(\s*[\'"]sync[\'"]',
-                r'self\.registration\.sync\.register',
-                r'BackgroundSync',
-            ],
-            'aggressive_activation': [
-                r'self\.skipWaiting\s*\(\s*\)',
-                r'clients\.claim\s*\(\s*\)',
-                r'skipWaiting.*clients\.claim',
-            ],
-            'mixed_origin_issues': [
-                r'fetch\([^)]*(?:https?:[^)]*)',
-                r'mode:\s*[\'"]?cors[\'"]?',
-                r'credentials:\s*[\'"]?include[\'"]?',
-            ],
-            'client_side_auth': [
-                r'response\.status\s*===\s*401',
-                r'response\.status\s*===\s*403',
-                r'redirect.*login',
-                r'window\.location.*login',
-            ]
+        self._compiled: Dict[str, List[re.Pattern]] = {
+            k: [re.compile(p, re.IGNORECASE | re.DOTALL) for p in v]
+            for k, v in _PATTERNS.items()
         }
-        
-        self.sensitive_route_patterns = [
-            r'/api/',
-            r'/auth',
-            r'/user',
-            r'/admin',
-            r'/profile',
-            r'/account',
-            r'/settings',
-            r'/billing',
-            r'/payment',
-            r'/token',
-            r'/session',
-            r'/private',
-            r'/secure',
-        ]
-        
-        self.compiled_security = {
-            key: [re.compile(pattern, re.IGNORECASE) for pattern in patterns]
-            for key, patterns in self.security_patterns.items()
-        }
-        
-        self.compiled_sensitive_routes = [
-            re.compile(pattern, re.IGNORECASE) for pattern in self.sensitive_route_patterns
-        ]
-    
-    def analyze_security_patterns(self, script_content: str, routes: List[str] = None) -> Dict[str, Any]:
+
+    def analyze_security_patterns(
+        self, script_content: str, routes: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
         if not script_content:
-            return self._empty_findings()
-        
-        findings = {
-            'patterns_detected': {},
-            'security_flags': [],
-            'sensitive_routes': [],
-            'risk_indicators': []
+            return self._empty()
+
+        concerns: List[str] = []
+        patterns = self._scan_patterns(script_content)
+
+        wb_routes = self._extract_workbox_routes(script_content)
+        wb_sensitive = self._workbox_sensitive_hits(wb_routes)
+
+        if wb_sensitive:
+            concerns.append("workbox_routes_cover_sensitive_paths")
+
+        if patterns["cache_ops"]["__WB_MANIFEST"] or "precacheAndRoute" in patterns["cache_ops"]["_hits"]:
+            concerns.append("precaching_detected")
+
+        if any(patterns["authy_fetch"].values()):
+            concerns.append("credentialed_fetch_or_auth_headers_detected")
+
+        if any(patterns["activation_aggr"].values()):
+            concerns.append("aggressive_activation_flags_present")
+
+        if any(patterns["broadcast_leak"].values()):
+            concerns.append("client_messaging_channel_present")
+
+        sensitive_routes = sorted(set(self._match_sensitive(routes or []) |
+                                      self._match_sensitive(self._wb_route_examples(wb_routes))))
+
+        frameworks, probes = self._infer_frameworks(script_content)
+
+        out = {
+            "patterns_detected": patterns,
+            "workbox_routes": wb_routes,           
+            "sensitive_routes": sensitive_routes,   
+            "concerns": sorted(set(concerns)),
+            "frameworks": frameworks,               
+            "suggested_probes": probes,             
         }
-        
-        try:
-            findings['patterns_detected'] = self._detect_security_patterns(script_content)
+
+        out["security_flags"] = self._compat_flags(patterns)
+        out["risk_indicators"] = self._compat_indicators(patterns, sensitive_routes, wb_sensitive)
+        return out
+
+    def _scan_patterns(self, code: str) -> Dict[str, Dict[str, Any]]:
+        res: Dict[str, Dict[str, Any]] = {}
+        for name, plist in self._compiled.items():
+            hits = []
+            present = False
+            for rx in plist:
+                if rx.search(code):
+                    hits.append(rx.pattern)
+                    present = True
+            res[name] = {"present": present, "_hits": hits}
+
+        res.setdefault("cache_ops", {})
+        res["cache_ops"]["__WB_MANIFEST"] = "__WB_MANIFEST" in code
+        return res
+
+    def _extract_workbox_routes(self, code: str) -> List[Dict[str, str]]:
+        out: List[Dict[str, str]] = []
+        for m in _WB_ROUTE_RE.finditer(code or ""):
+            raw_handler = m.group("handler") or ""
+            strat = None
+            sm = _WB_STRATEGY_RE.search(raw_handler)
+            if sm:
+                strat = sm.group("strategy")
+            matcher = (m.group("matcher") or "").strip()
+            out.append({"matcher": matcher, "strategy": (strat or "").lower(), "raw": m.group(0)})
+        return out
+
+    def _wb_route_examples(self, wb_routes: List[Dict[str, str]]) -> List[str]:
+        samples: List[str] = []
+        for r in wb_routes:
+            m = r["matcher"]
             
-            if routes:
-                findings['sensitive_routes'] = self._analyze_sensitive_routes(routes)
-            
-            findings['security_flags'] = self._generate_security_flags(findings['patterns_detected'])
-            
-            findings['risk_indicators'] = self._generate_risk_indicators(findings)
-            
-        except Exception as e:
-            logger.error(f"Error in security analysis: {e}")
-        
-        return findings
-    
-    def _detect_security_patterns(self, script_content: str) -> Dict[str, bool]:
-        detected = {}
-        
-        for pattern_name, patterns in self.compiled_security.items():
-            detected[pattern_name] = False
-            
-            for pattern in patterns:
-                if pattern.search(script_content):
-                    detected[pattern_name] = True
+            for s in re.findall(r'["\'](\/[^"\']+)["\']', m):
+                samples.append(s)
+                
+            for s in re.findall(r'new\s+RegExp\s*\(\s*["\']([^"\']+)["\']', m, flags=re.IGNORECASE):
+                if not s.startswith("^"): s = "/" + s.lstrip("/")
+                samples.append(s)
+            for s in re.findall(r'/(\/[^/][^/]+)/[gimuy]*', m):
+                samples.append("/" + s)
+        return samples
+
+    def _workbox_sensitive_hits(self, wb_routes: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        hits: List[Dict[str, str]] = []
+        for r in wb_routes:
+            for p in _COMPILED_SENSITIVE:
+                if p.search(r["matcher"]) or any(p.search(x) for x in self._wb_route_examples([r])):
+                    hits.append(r)
                     break
-        
-        return detected
-    
-    def _analyze_sensitive_routes(self, routes: List[str]) -> List[str]:
-        sensitive = []
-        
-        for route in routes:
-            for pattern in self.compiled_sensitive_routes:
-                if pattern.search(route):
-                    sensitive.append(route)
+        return hits
+
+    def _match_sensitive(self, paths: List[str]) -> set:
+        out = set()
+        for p in paths:
+            for rx in _COMPILED_SENSITIVE:
+                if rx.search(p):
+                    out.add(p)
                     break
-        
-        return sensitive
-    
-    def _generate_security_flags(self, patterns: Dict[str, bool]) -> List[str]:
+        return out
+
+    def _infer_frameworks(self, code: str) -> Tuple[List[str], List[str]]:
+        fw = []
+        probes = []
+        if any(re.search(p, code, re.IGNORECASE) for p in _FRAMEWORKS["angular"]):
+            fw.append("angular")
+            probes.append("/ngsw.json")
+        if any(re.search(p, code, re.IGNORECASE) for p in _FRAMEWORKS["flutter"]):
+            fw.append("flutter")
+            probes.extend([
+                "/flutter_service_worker.js",
+                "/assets/AssetManifest.json",
+                "/assets/FontManifest.json",
+            ])
+        return sorted(set(fw)), sorted(set(probes))
+
+    def _compat_flags(self, patterns: Dict[str, Dict[str, Any]]) -> List[str]:
         flags = []
-        
-        flag_mapping = {
-            'eval_usage': 'EVAL_USAGE',
-            'third_party_imports': 'THIRD_PARTY_IMPORTS',
-            'cache_poisoning_risk': 'CACHE_POISONING_RISK',
-            'background_sync': 'BACKGROUND_SYNC',
-            'aggressive_activation': 'AGGRESSIVE_ACTIVATION',
-            'mixed_origin_issues': 'MIXED_ORIGIN_ISSUES',
-            'client_side_auth': 'CLIENT_SIDE_AUTH'
-        }
-        
-        for pattern_key, flag_name in flag_mapping.items():
-            if patterns.get(pattern_key):
-                flags.append(flag_name)
-        
+        if patterns["eval_like"]["present"]:
+            flags.append("EVAL_USAGE")
+        if patterns["third_party_imports"]["present"]:
+            flags.append("THIRD_PARTY_IMPORTS")
+        if patterns["cache_ops"]["present"]:
+            flags.append("CACHE_POISONING_RISK")  
+        if patterns["activation_aggr"]["present"]:
+            flags.append("AGGRESSIVE_ACTIVATION")
+        if patterns["authy_fetch"]["present"]:
+            flags.append("CLIENT_SIDE_AUTH")
         return flags
-    
-    def _generate_risk_indicators(self, findings: Dict[str, Any]) -> List[str]:
-        indicators = []
-        
-        if findings.get('sensitive_routes'):
-            indicators.append('SENSITIVE_CACHING')
-        
-        patterns = findings.get('patterns_detected', {})
-        if patterns.get('aggressive_activation') and patterns.get('cache_poisoning_risk'):
-            indicators.append('AGGRESSIVE_CACHING')
-        
-        if patterns.get('client_side_auth') and findings.get('sensitive_routes'):
-            indicators.append('AUTH_BYPASS_RISK')
-        
-        return indicators
-    
-    def _empty_findings(self) -> Dict[str, Any]:
+
+    def _compat_indicators(
+        self,
+        patterns: Dict[str, Dict[str, Any]],
+        sensitive_routes: List[str],
+        wb_sensitive: List[Dict[str, str]]
+    ) -> List[str]:
+        ind = []
+        if sensitive_routes:
+            ind.append("SENSITIVE_CACHING")
+        if patterns["activation_aggr"]["present"] and patterns["cache_ops"]["present"]:
+            ind.append("AGGRESSIVE_CACHING")
+        if patterns["authy_fetch"]["present"] and sensitive_routes:
+            ind.append("AUTH_BYPASS_RISK")
+        if wb_sensitive:
+            ind.append("WB_SENSITIVE_MATCHERS_PRESENT")
+        return ind
+
+    def _empty(self) -> Dict[str, Any]:
         return {
-            'patterns_detected': {},
-            'security_flags': [],
-            'sensitive_routes': [],
-            'risk_indicators': []
+            "patterns_detected": {},
+            "workbox_routes": [],
+            "sensitive_routes": [],
+            "concerns": [],
+            "frameworks": [],
+            "suggested_probes": [],
+            "security_flags": [],
+            "risk_indicators": [],
         }
-    
+
     def has_third_party_imports(self, import_urls: List[str], base_domain: str) -> List[str]:
-        third_party = []
-        base_domain_clean = self._extract_domain(base_domain)
-        
-        for url in import_urls:
-            try:
-                url_domain = self._extract_domain(url)
-                if url_domain != base_domain_clean:
-                    third_party.append(url)
-            except Exception:
-                continue
-        
-        return third_party
-    
-    def _extract_domain(self, url: str) -> str:
-        parsed = urlparse(url)
-        domain = parsed.netloc.lower()
-    
-        if ':' in domain:
-            domain = domain.split(':')[0]
-        
-        return domain
+        base = self._domain(base_domain)
+        third = []
+        for u in (import_urls or []):
+            d = self._domain(u)
+            if d and d != base:
+                third.append(u)
+        return third
+
+    def _domain(self, url: str) -> str:
+        try:
+            d = (urlparse(url).netloc or "").lower()
+            return d.split(":")[0]
+        except Exception:
+            return ""
