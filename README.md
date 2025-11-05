@@ -33,7 +33,6 @@ Most PWA/SW security reviews stop at “is there a service worker?”. Real apps
 - **CI-friendly outputs**: `--json`, `--sarif`, and `--nuclei-out` for re-verification.
 
 ---
-
 **Flow:** Targets → Fetch/Probe → Static (scope, routes, patterns) → AST → *(optional)* Headless validate → Score & flag → Filter/Serialize → Summarize.
 
 ---
