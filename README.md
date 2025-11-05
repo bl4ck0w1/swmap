@@ -2,7 +2,7 @@
 
 ![swmap-logo](logo.png)
 
-**SWMap** is an advanced **Service Worker security analyzer** for modern web apps. It discovers, fetches, and analyzes Service Workers to surface scope risks, caching issues, route exposure, Workbox/Flutter usage, and dangerous code patterns — and, when you enable it, it can **prove** behavior with a headless browser.
+**SWMap** is an advanced **Service Worker security analyzer** for modern web apps. It discovers, fetches, and analyzes Service Workers to surface scope risks, caching issues, route exposure, Workbox/Flutter usage, and dangerous code patterns and, when you enable it, it can **prove** behavior with a headless browser.
 
 Built for bug bounty hunters, red teams, and product security engineers who want rigor, speed, and explainability.
 
