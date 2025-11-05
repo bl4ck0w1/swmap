@@ -45,6 +45,7 @@ THEMES = {
         "banner_end": "#904e4e",
     },
 }
+
 HELP_THEME = os.getenv("SWMAP_HELP_THEME", "safe")
 if HELP_THEME not in THEMES:
     HELP_THEME = "safe"
@@ -314,9 +315,8 @@ class SWMapCLI:
 
     def _create_scanner(self, config: ScanConfig, args: argparse.Namespace):
         from src.core.scanner import SWScanner
-
         ast_depth = 3 if (args.deep and args.ast_depth is None) else (args.ast_depth if args.ast_depth is not None else 2)
-
+        
         scanner = SWScanner(
             parallel=config.parallel,
             timeout=config.timeout,
@@ -348,8 +348,7 @@ class SWMapCLI:
             headless_logout_script=args.logout_script,
             headless_nav_delay_ms=getattr(args, "delay_ms", 0),
             proxy_url=getattr(args, "proxy", None),
-            headless_cookies_netscape_file=getattr(args, "cookies", None),
-        )
+            headless_cookies_netscape_file=getattr(args, "cookies", None), )
 
         if getattr(args, "cookies", None):
             try:
@@ -521,8 +520,7 @@ class SWMapCLI:
         headers: Dict[str, str],
         cookies: Optional[str],
         timeout: int,
-        proxy: Optional[str],
-    ):
+        proxy: Optional[str], ):
         if not _HAVE_RE_FETCH:
             return
         if self._refetcher is None:
@@ -594,8 +592,7 @@ class SWMapCLI:
             self.config.headers,
             self.config.cookies,
             self.config.timeout,
-            getattr(args, "proxy", None),
-        )
+            getattr(args, "proxy", None), )
 
         try:
             if _HAVE_RE_FETCH and getattr(r, "sw_url", ""):
@@ -676,8 +673,8 @@ class SWMapCLI:
             headless_logout_url=args.logout_url,
             headless_logout_script=args.logout_script,
             headless_nav_delay_ms=getattr(args, "delay_ms", 0),
-            proxy_url=getattr(args, "proxy", None),
-        )
+            proxy_url=getattr(args, "proxy", None), )
+        
         enhancer = EnhancedAnalyzer(config=enh_cfg)
         try:
             enhanced = enhancer.analyze_service_worker(
@@ -864,8 +861,8 @@ class SWMapCLI:
             targets_processed=scanner.stats.get("targets_processed", 0),
             targets_with_sw=scanner.stats.get("sw_found", 0),
             targets_with_errors=scanner.stats.get("errors", 0),
-            results=results,
-        )
+            results=results, )
+        
         if not self.config or not self.config.quiet_mode:
             summary.print_summary()
 
@@ -953,8 +950,7 @@ class SWMapCLI:
                 self.config.headers,
                 self.config.cookies,
                 self.config.timeout,
-                getattr(args, "proxy", None),
-            )
+                getattr(args, "proxy", None), )
 
             logger.debug(f"Starting scan of {len(targets)} targets")
 
@@ -1022,10 +1018,9 @@ def main():
                 t_banner.apply_gradient(theme["banner_start"], theme["banner_end"])
             except Exception:
                 t_banner.stylize(theme["banner_start"])
+
             c.print(t_banner)
-            c.print(
-                f"[bold {theme['accent']}]SWMap[/] - Service Worker Security Analyzer v{get_version()}"
-            )
+            c.print(f"[bold {theme['accent']}]SWMap[/] - Service Worker Security Analyzer v{get_version()}")
             c.print("Advanced recon tool for Service Worker security assessment")
             c.print("[link=https://github.com/bl4ck0w1/swmap]https://github.com/bl4ck0w1/swmap[/]")
         else:
@@ -1036,7 +1031,6 @@ def main():
         sys.exit(EXIT_CODES["SUCCESS"])
 
     sys.exit(cli.run(args))
-
 
 if __name__ == "__main__":
     main()
