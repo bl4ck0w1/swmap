@@ -13,7 +13,7 @@ log_error()   { echo -e "${RED}[ERROR]${NC} $*"; }
 PYTHON_MIN_VERSION="3.9"
 SWMAP_VERSION="1.0.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$SCRIPT_DIR"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DEFAULT_INSTALL_DIR="/usr/local/bin"
 ALT_INSTALL_DIR="$HOME/.local/bin"
 CONFIG_DIR="$HOME/.swmap"
@@ -33,13 +33,12 @@ Options:
 EOF
 }
 
-# ---------- Arg parsing ----------
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -h|--help) usage; exit 0;;
-    --no-deps) NO_DEPS=true; shift;;
-    --test-only) TEST_ONLY=true; shift;;
-    *) log_warning "Unknown option: $1"; usage; exit 1;;
+    -h|--help) usage; exit 0 ;;
+    --no-deps) NO_DEPS=true; shift ;;
+    --test-only) TEST_ONLY=true; shift ;;
+    *) log_warning "Unknown option: $1"; usage; exit 1 ;;
   esac
 done
 
@@ -51,7 +50,6 @@ check_root() {
 }
 
 compare_versions() {
-  # returns 0 if $1 >= $2
   printf '%s\n%s\n' "$1" "$2" | sort -C -V
 }
 
@@ -87,7 +85,6 @@ check_dependencies() {
   log_success "Dependency check completed"
 }
 
-# ---------- Setup tasks ----------
 create_config_dir() {
   log_info "Creating configuration directory at $CONFIG_DIR"
   mkdir -p "$CONFIG_DIR"/{logs,cache,patterns}
@@ -96,6 +93,7 @@ create_config_dir() {
 
 install_python_deps() {
   $NO_DEPS && { log_info "Skipping dependency installation (--no-deps)"; return; }
+
   log_info "Installing Python dependencies via pip..."
 
   if ! command -v pip3 >/dev/null 2>&1; then
@@ -104,28 +102,25 @@ install_python_deps() {
   fi
 
   python3 -m pip install --upgrade pip --quiet
+  log_success "pip upgraded"
+  log_info "Installing swmap package from $PROJECT_ROOT ..."
+  python3 -m pip install -e "$PROJECT_ROOT"
+  log_success "swmap package installed"
 
-  # Minimal runtime deps used in scripts (expand if your package has more)
-  local requirements=(
-    "requests>=2.28.0"
-    "urllib3>=1.26.0"
-    "psutil>=5.9.0"
-  )
-  for pkg in "${requirements[@]}"; do
-    log_info "Installing $pkg ..."
-    if python3 -m pip install "$pkg" --quiet; then
-      log_success "Installed $pkg"
-    else
-      log_error "Failed to install $pkg"
-      exit 1
-    fi
-  done
+  log_info "Installing Playwright runtime..."
+  python3 -m pip install playwright
+
+  log_info "Installing Playwright Chromium browser (this may take a bit)..."
+  if python3 -m playwright install chromium; then
+    log_success "Playwright chromium installed"
+  else
+    log_warning "Playwright browser install failed — headless features may not work until you install it manually."
+  fi
 
   log_success "Python dependencies installed"
 }
 
 pick_install_dir() {
-  # choose a writable install directory for the CLI symlink
   if [[ -w "$DEFAULT_INSTALL_DIR" ]]; then
     echo "$DEFAULT_INSTALL_DIR"
   else
@@ -153,12 +148,10 @@ install_swmap() {
   ln -sf "$target" "$link_path"
   log_success "Installed launcher: $link_path"
 
-  # Desktop entry (Linux GUI)
   if command -v xdg-desktop-menu >/dev/null 2>&1; then
     create_desktop_entry "$link_path"
   fi
 
-  # Ensure $dest_dir is on PATH
   if [[ ":$PATH:" != *":$dest_dir:"* ]]; then
     log_info "Adding $dest_dir to PATH in your shell profile"
     add_to_path "$dest_dir"
@@ -205,11 +198,10 @@ add_to_path() {
 
 run_tests() {
   log_info "Running post-installation tests..."
-  if python3 -c "import requests, psutil; print('OK')" >/dev/null 2>&1; then
+  if python3 -c "import importlib; importlib.import_module('playwright'); print('OK')" >/dev/null 2>&1; then
     log_success "Python dependency import test passed"
   else
-    log_error "Dependency import test failed"
-    exit 1
+    log_warning "Playwright not importable — headless may not work until you fix Python env"
   fi
 
   if [[ -f "$PROJECT_ROOT/swmap.py" ]]; then
